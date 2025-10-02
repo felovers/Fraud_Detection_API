@@ -1,7 +1,10 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pandas
 scikit-learn
 joblib
-imblearn
+imbalanced-learn
 python-multipart
+huggingface_hub
+requests
+tqdm
