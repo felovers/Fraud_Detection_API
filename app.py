@@ -1,94 +1,71 @@
-# app.py
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import pandas as pd
-import io, os
+# app.py (trecho relevante)
+import os
 from joblib import load
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+import requests
+from huggingface_hub import hf_hub_download
+import time
 
 MODEL_PATH = "RF_Fraud_Model.pkl"
 SCALER_PATH = "scaler.pkl"
 
-app = FastAPI(title="Detecção de Fraudes API")
+HF_REPO = os.getenv("HF_REPO")      # ex: "felovers/fraud-model"
+HF_TOKEN = os.getenv("HF_TOKEN")    # token (se repo privado)
+MODEL_URL = os.getenv("MODEL_URL")  # alternativa: link direto (Google Drive/generic)
 
-# Permitir requisições de qualquer origem (útil para testes)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def download_file_from_url(url, dest_path):
+    # download streaming
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(dest_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
-# Carrega modelo e scaler (se existirem) na inicialização
-model = None
-scaler = None
-if os.path.exists(MODEL_PATH):
-    try:
-        model = load(MODEL_PATH)
-        print(f"[INFO] Modelo carregado: {MODEL_PATH}")
-    except Exception as e:
-        print("[WARN] Falha ao carregar modelo:", e)
+def ensure_model_and_scaler():
+    # se já existem, não faz nada
+    if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
+        return
 
-if os.path.exists(SCALER_PATH):
-    try:
-        scaler = load(SCALER_PATH)
-        print(f"[INFO] Scaler carregado: {SCALER_PATH}")
-    except Exception as e:
-        print("[WARN] Falha ao carregar scaler:", e)
+    # 1) Tenta Hugging Face (se variável HF_REPO fornecida)
+    if HF_REPO:
+        try:
+            print("[INFO] Baixando modelo do Hugging Face Hub...")
+            # retorna caminho local do arquivo baixado
+            model_local = hf_hub_download(repo_id=HF_REPO, filename="RF_Fraud_Model.pkl", repo_type="model", token=HF_TOKEN)
+            scaler_local = hf_hub_download(repo_id=HF_REPO, filename="scaler.pkl", repo_type="model", token=HF_TOKEN)
+            # mover/renomear para nomes esperados
+            os.replace(model_local, MODEL_PATH)
+            os.replace(scaler_local, SCALER_PATH)
+            print("[INFO] Modelo e scaler baixados do HF com sucesso.")
+            return
+        except Exception as e:
+            print("[WARN] Falha ao baixar do HF:", e)
 
-@app.get("/")
-def home():
-    return {
-        "message": "API de Detecção de Fraudes rodando",
-        "model_loaded": bool(model),
-        "scaler_loaded": bool(scaler),
-    }
+    # 2) Tenta URL direta (MODEL_URL)
+    if MODEL_URL:
+        try:
+            print("[INFO] Baixando modelo de MODEL_URL...")
+            # você pode ter dois links, um para o modelo e outro para o scaler; aqui assumimos MODEL_URL e SCALER_URL
+            model_url = MODEL_URL
+            scaler_url = os.getenv("SCALER_URL")
+            if not scaler_url:
+                raise ValueError("SCALER_URL não definido")
+            download_file_from_url(model_url, MODEL_PATH)
+            download_file_from_url(scaler_url, SCALER_PATH)
+            print("[INFO] Modelo e scaler baixados via URL com sucesso.")
+            return
+        except Exception as e:
+            print("[WARN] Falha ao baixar via MODEL_URL:", e)
 
-@app.post("/evaluate_csv")
-async def evaluate_csv(file: UploadFile = File(...)):
-    if model is None:
-        raise HTTPException(status_code=500, detail="Modelo não encontrado no servidor.")
+    raise RuntimeError("Modelo/scaler não encontrado localmente e não foi possível baixar automaticamente.")
 
-    contents = await file.read()
-    try:
-        df = pd.read_csv(io.BytesIO(contents))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Arquivo CSV inválido ou mal-formatado.")
-
-    # Verificações mínimas
-    if 'Amount' not in df.columns or 'Class' not in df.columns:
-        raise HTTPException(status_code=400, detail="CSV precisa conter colunas 'Amount' e 'Class'.")
-
-    # Normaliza 'Amount' usando o scaler salvo ou ajusta um novo (fallback)
-    if scaler is not None:
-        df['NormalizedAmount'] = scaler.transform(df['Amount'].values.reshape(-1, 1))
-    else:
-        tmp_scaler = StandardScaler()
-        df['NormalizedAmount'] = tmp_scaler.fit_transform(df['Amount'].values.reshape(-1, 1))
-
-    # Remover colunas desnecessárias (se existirem)
-    drop_cols = []
-    if 'Time' in df.columns:
-        drop_cols.append('Time')
-    drop_cols.append('Amount')
-    df = df.drop(columns=drop_cols)
-
-    X = df.drop(columns=['Class'])
-    y = df['Class']
-
-    # Previsões e métricas
-    y_pred = model.predict(X)
-    try:
-        y_prob = model.predict_proba(X)[:, 1]
-        auc = float(roc_auc_score(y, y_prob))
-    except Exception:
-        auc = None  # se o modelo não suportar predict_proba
-    report = classification_report(y, y_pred, output_dict=True)
-    conf_matrix = confusion_matrix(y, y_pred).tolist()
-
-    return {
-        "classification_report": report,
-        "auc_roc": auc,
-        "confusion_matrix": conf_matrix
-    }
+# Chame ensure_model_and_scaler() antes de carregar o modelo na inicialização do app
+try:
+    ensure_model_and_scaler()
+    model = load(MODEL_PATH)
+    scaler = load(SCALER_PATH)
+    print("[INFO] Modelo e scaler carregados.")
+except Exception as e:
+    print("[ERROR] Não foi possível carregar modelo/scaler:", e)
+    model = None
+    scaler = None
