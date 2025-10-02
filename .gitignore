@@ -1,0 +1,8 @@
+# modelo + scaler - não commitar
+RF_Fraud_Model.pkl
+scaler.pkl
+
+# ambiente
+venv/
+__pycache__/
+*.pyc
