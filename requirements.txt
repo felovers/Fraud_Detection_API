@@ -7,4 +7,5 @@ imbalanced-learn
 python-multipart
 huggingface_hub
 requests
+seaborn
 tqdm
