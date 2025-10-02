@@ -10,3 +10,4 @@ requests
 seaborn
 tqdm
 matplotlib
+python-multipart
