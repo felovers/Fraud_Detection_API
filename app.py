@@ -10,7 +10,7 @@ app = FastAPI()
 MODEL_PATH = "RF_Fraud_Model.pkl"
 SCALER_PATH = "scaler.pkl"
 
-HF_REPO = os.getenv("felovers/fraud-model")  
+HF_REPO = os.getenv("HF_REPO")  
 
 def ensure_model_and_scaler():
     # Se já existem, não faz nada
@@ -48,3 +48,4 @@ except Exception as e:
     print("[ERROR] Não foi possível carregar modelo/scaler:", e)
     model = None
     scaler = None
+
