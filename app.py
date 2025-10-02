@@ -11,26 +11,29 @@ app = FastAPI(title="Fraud Detection API")
 MODEL_PATH = "RF_Fraud_Model.pkl"
 SCALER_PATH = "scaler.pkl"
 
-HF_REPO = "felovers/fraud-model"  # Repositório público do Hugging Face
+CHUNK_SIZE = 5000  # número de linhas processadas por vez
 
-# ---------- Função para garantir modelo e scaler ----------
+# ---------- Garantir modelo e scaler ----------
 def ensure_model_and_scaler():
+    hf_repo = os.getenv("HF_REPO")  # pega do Render
+    if hf_repo is None:
+        raise RuntimeError("Variável de ambiente HF_REPO não definida.")
+
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         print("[INFO] Modelo e scaler já existem localmente.")
         return
 
     try:
         print("[INFO] Baixando modelo e scaler do Hugging Face...")
-        # Força download direto na raiz do projeto
         hf_hub_download(
-            repo_id=HF_REPO,
+            repo_id=hf_repo,
             filename="RF_Fraud_Model.pkl",
             repo_type="model",
             local_dir=".",
             local_dir_use_symlinks=False
         )
         hf_hub_download(
-            repo_id=HF_REPO,
+            repo_id=hf_repo,
             filename="scaler.pkl",
             repo_type="model",
             local_dir=".",
@@ -56,45 +59,60 @@ except Exception as e:
 def root():
     return {"status": "API Online"}
 
-# ---------- Endpoint para predição ----------
+# ---------- Endpoint predict (com chunks) ----------
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if model is None or scaler is None:
         return {"error": "Modelo ou scaler não carregados."}
 
-    # Ler CSV enviado
+    # Ler CSV enviado em chunks
     try:
         contents = await file.read()
-        df = pd.read_csv(io.BytesIO(contents))
+        chunks = pd.read_csv(io.BytesIO(contents), chunksize=CHUNK_SIZE)
     except Exception as e:
         return {"error": f"Não foi possível ler o CSV: {e}"}
 
-    if 'Amount' not in df.columns:
-        return {"error": "CSV deve conter coluna 'Amount'."}
+    all_predictions = []
+    all_probabilities = []
+    y_true_total = []
 
-    # Normalizar Amount com scaler carregado
-    df['NormalizedAmount'] = scaler.transform(df['Amount'].values.reshape(-1,1))
-    df = df.drop(['Time', 'Amount'], axis=1, errors='ignore')
+    for chunk in chunks:
+        if 'Amount' not in chunk.columns:
+            return {"error": "CSV deve conter coluna 'Amount'."}
 
-    # Separar X e y (se existir coluna Class)
-    X = df.drop('Class', axis=1, errors='ignore')
-    y_true = df['Class'] if 'Class' in df.columns else None
+        # Normalizar Amount
+        chunk['NormalizedAmount'] = scaler.transform(chunk['Amount'].values.reshape(-1,1))
+        chunk = chunk.drop(['Time', 'Amount'], axis=1, errors='ignore')
 
-    # Predição
-    y_pred = model.predict(X)
-    y_prob = model.predict_proba(X)[:,1] if hasattr(model, "predict_proba") else None
+        # Separar X e y
+        X_chunk = chunk.drop('Class', axis=1, errors='ignore')
+        y_chunk = chunk['Class'] if 'Class' in chunk.columns else None
 
-    # Métricas se y_true existe
+        # Predição
+        y_pred_chunk = model.predict(X_chunk)
+        y_prob_chunk = model.predict_proba(X_chunk)[:,1] if hasattr(model, "predict_proba") else None
+
+        all_predictions.extend(y_pred_chunk.tolist())
+        if y_prob_chunk is not None:
+            all_probabilities.extend(y_prob_chunk.tolist())
+        if y_chunk is not None:
+            y_true_total.extend(y_chunk.tolist())
+
+    # Calcular métricas se y_true_total existe
     metrics = {}
-    if y_true is not None:
-        metrics['classification_report'] = classification_report(y_true, y_pred, output_dict=True)
-        metrics['roc_auc_score'] = roc_auc_score(y_true, y_prob) if y_prob is not None else None
-        cm = confusion_matrix(y_true, y_pred)
-        metrics['confusion_matrix'] = cm.tolist()  # lista para JSON
+    if y_true_total:
+        import numpy as np
+        y_pred_array = np.array(all_predictions)
+        y_true_array = np.array(y_true_total)
+        y_prob_array = np.array(all_probabilities) if all_probabilities else None
 
-    # Retornar predições e métricas
+        metrics['classification_report'] = classification_report(y_true_array, y_pred_array, output_dict=True)
+        metrics['roc_auc_score'] = roc_auc_score(y_true_array, y_prob_array) if y_prob_array is not None else None
+        cm = confusion_matrix(y_true_array, y_pred_array)
+        metrics['confusion_matrix'] = cm.tolist()
+
     return {
-        "predictions": y_pred.tolist(),
-        "probabilities": y_prob.tolist() if y_prob is not None else None,
+        "predictions": all_predictions,
+        "probabilities": all_probabilities if all_probabilities else None,
         "metrics": metrics
     }
