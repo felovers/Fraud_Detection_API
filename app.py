@@ -1,51 +1,98 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from joblib import load
+import pandas as pd
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
 from huggingface_hub import hf_hub_download
+import seaborn as sns
+import matplotlib.pyplot as plt
+import io
 
-import requests
-
-app = FastAPI()
+app = FastAPI(title="Fraud Detection API")
 
 MODEL_PATH = "RF_Fraud_Model.pkl"
 SCALER_PATH = "scaler.pkl"
 
-HF_REPO = os.getenv("HF_REPO")  
+HF_REPO = "felovers/fraud-model"  # Repositório público
 
+# ---------- Função para garantir modelo e scaler ----------
 def ensure_model_and_scaler():
-    # Se já existem, não faz nada
     if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH):
         print("[INFO] Modelo e scaler já existem localmente.")
         return
 
-    if HF_REPO:
-        try:
-            print("[INFO] Baixando modelo do Hugging Face Hub...")
-            model_local = hf_hub_download(
-                repo_id=HF_REPO,
-                filename="RF_Fraud_Model.pkl",
-                repo_type="model"
-            )
-            scaler_local = hf_hub_download(
-                repo_id=HF_REPO,
-                filename="scaler.pkl",
-                repo_type="model"
-            )
-            # mover para nomes esperados
-            os.replace(model_local, MODEL_PATH)
-            os.replace(scaler_local, SCALER_PATH)
-            print("[INFO] Modelo e scaler baixados do HF com sucesso.")
-        except Exception as e:
-            print("[WARN] Falha ao baixar do HF:", e)
-            raise RuntimeError("Não foi possível baixar modelo/scaler do Hugging Face.")
+    try:
+        print("[INFO] Baixando modelo do Hugging Face...")
+        model_local = hf_hub_download(
+            repo_id=HF_REPO,
+            filename="RF_Fraud_Model.pkl",
+            repo_type="model"
+        )
+        scaler_local = hf_hub_download(
+            repo_id=HF_REPO,
+            filename="scaler.pkl",
+            repo_type="model"
+        )
+        os.replace(model_local, MODEL_PATH)
+        os.replace(scaler_local, SCALER_PATH)
+        print("[INFO] Modelo e scaler baixados com sucesso.")
+    except Exception as e:
+        raise RuntimeError(f"Erro ao baixar modelo/scaler: {e}")
 
+# ---------- Inicialização ----------
 try:
     ensure_model_and_scaler()
     model = load(MODEL_PATH)
     scaler = load(SCALER_PATH)
-    print("[INFO] Modelo e scaler carregados com sucesso.")
+    print("[INFO] Modelo e scaler carregados.")
 except Exception as e:
     print("[ERROR] Não foi possível carregar modelo/scaler:", e)
     model = None
     scaler = None
 
+# ---------- Endpoints ----------
+@app.get("/")
+def root():
+    return {"status": "API Online"}
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
+    if model is None or scaler is None:
+        return {"error": "Modelo ou scaler não carregados."}
+
+    # Ler CSV enviado
+    try:
+        contents = await file.read()
+        df = pd.read_csv(io.BytesIO(contents))
+    except Exception as e:
+        return {"error": f"Não foi possível ler o CSV: {e}"}
+
+    if 'Amount' not in df.columns:
+        return {"error": "CSV deve conter coluna 'Amount'."}
+
+    # Normalizar Amount com scaler carregado
+    df['NormalizedAmount'] = scaler.transform(df['Amount'].values.reshape(-1,1))
+    df = df.drop(['Time', 'Amount'], axis=1, errors='ignore')
+
+    # Separar X e y (se existir coluna Class)
+    X = df.drop('Class', axis=1, errors='ignore')
+    y_true = df['Class'] if 'Class' in df.columns else None
+
+    # Predição
+    y_pred = model.predict(X)
+    y_prob = model.predict_proba(X)[:,1] if hasattr(model, "predict_proba") else None
+
+    # Métricas se y_true existe
+    metrics = {}
+    if y_true is not None:
+        metrics['classification_report'] = classification_report(y_true, y_pred, output_dict=True)
+        metrics['roc_auc_score'] = roc_auc_score(y_true, y_prob) if y_prob is not None else None
+        cm = confusion_matrix(y_true, y_pred)
+        metrics['confusion_matrix'] = cm.tolist()  # lista para JSON
+
+    # Retornar predições e métricas
+    return {
+        "predictions": y_pred.tolist(),
+        "probabilities": y_prob.tolist() if y_prob is not None else None,
+        "metrics": metrics
+    }
