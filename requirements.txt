@@ -8,6 +8,5 @@ python-multipart
 huggingface_hub
 requests
 seaborn
-tqdm
 matplotlib
 python-multipart
