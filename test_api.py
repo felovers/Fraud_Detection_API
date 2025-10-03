@@ -2,7 +2,7 @@ import requests
 import seaborn as sns
 import matplotlib.pyplot as plt
 import json
-import time  # <--- import para medir tempo
+import time
 
 # URL do endpoint predict
 url = "https://fraud-detection-api-7ehe.onrender.com/predict"
@@ -16,7 +16,7 @@ start_time = time.time()
 # Enviar arquivo via POST
 with open(csv_path, "rb") as f:
     files = {"file": (csv_path, f, "text/csv")}
-    response = requests.post(url, files=files, timeout=300)  # timeout maior
+    response = requests.post(url, files=files, timeout=300)
 
 end_time = time.time()
 elapsed_time = end_time - start_time
@@ -26,7 +26,7 @@ if response.status_code == 200:
     data = response.json()
     metrics = data.get("metrics", {})
 
-    print(f"\n⏱️ Tempo total de processamento: {elapsed_time:.2f} segundos\n")
+    print(f"\nTempo total de processamento: {elapsed_time:.2f} segundos\n")
 
     if not metrics:
         print("Nenhuma métrica retornada.")
