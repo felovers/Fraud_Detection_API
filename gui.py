@@ -15,7 +15,7 @@ from threading import Thread
 
 # --- VARIÁVEIS GLOBAIS ---
 API_URL = "https://fraud-detection-api-7ehe.onrender.com/predict" # URL da API
-df_detected_frauds = pd.DataFrame()                             
+df_full_results = pd.DataFrame()                             
 current_cm = None                                               
 report_dict_for_export = {}
 scalar_metrics_for_export = {}
@@ -170,21 +170,22 @@ def run_evaluation_thread():
         log_to_screen("Relatório Final Gerado:")
         log_to_screen("\n" + report_str)
         
-        # 4.2. Matriz e DataFrame
-        global current_cm, df_detected_frauds
+        # 4.2. Matriz e DataFrame COMPLETO
+        global current_cm, df_full_results
         current_cm = confusion_matrix(true_labels, predictions)
         
         df_test_results = X_test.copy()
         df_test_results['Class_Real'] = y_test
         df_test_results['prediction'] = predictions
-        df_detected_frauds = df_test_results[df_test_results['prediction'] == 1]
+        df_full_results = df_test_results 
         
-        # Habilita botões
+        detected_count = len(df_test_results[df_test_results['prediction'] == 1])
+        
         btn_show_matrix.config(state=tk.NORMAL)
         btn_export_report.config(state=tk.NORMAL)
         
         # --- FINALIZAÇÃO ---
-        status_var.set(f"Avaliação concluída. {len(df_detected_frauds)} fraudes detectadas.")
+        status_var.set(f"Avaliação concluída. {detected_count} fraudes detectadas.")
         log_to_screen(f"PROCESSO FINALIZADO COM SUCESSO.")
 
     except Exception as e:
@@ -227,7 +228,8 @@ def show_confusion_matrix():
     canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
 
 def export_detected_frauds_report():
-    global df_detected_frauds, report_dict_for_export, scalar_metrics_for_export
+    """Gera o Excel agora com 4 ABAS, incluindo Falsos Negativos."""
+    global df_full_results, report_dict_for_export, scalar_metrics_for_export
     if not report_dict_for_export: return
     try:
         now = datetime.now()
@@ -235,18 +237,37 @@ def export_detected_frauds_report():
         suggested_filename = f"Relatorio_Avaliacao_Fraude_{timestamp}.xlsx"
         filepath = filedialog.asksaveasfilename(title="Salvar Relatório Excel", initialfile=suggested_filename, defaultextension=".xlsx", filetypes=[("Arquivos Excel", "*.xlsx")])
         if filepath:
+            # 1. Resumo
             df_report = pd.DataFrame(report_dict_for_export).transpose().reset_index().rename(columns={'index': 'Métrica'})
             df_scalars = pd.DataFrame.from_dict(scalar_metrics_for_export, orient='index', columns=['Score']).reset_index().rename(columns={'index': 'Métrica'})
-            df_tp = df_detected_frauds[df_detected_frauds['Class_Real'] == 1]
-            df_fp = df_detected_frauds[df_detected_frauds['Class_Real'] == 0]
+            
+            # 2. Filtragem dos dados (VP, FP, FN)
+            # VP: Era Fraude (1) e Modelo disse Fraude (1)
+            df_tp = df_full_results[(df_full_results['Class_Real'] == 1) & (df_full_results['prediction'] == 1)]
+            
+            # FP: Era Normal (0) e Modelo disse Fraude (1)
+            df_fp = df_full_results[(df_full_results['Class_Real'] == 0) & (df_full_results['prediction'] == 1)]
+            
+            # FN (NOVO): Era Fraude (1) e Modelo disse Normal (0) -> A Fraude que passou
+            df_fn = df_full_results[(df_full_results['Class_Real'] == 1) & (df_full_results['prediction'] == 0)]
+
             cols_drop = ['Class_Real', 'prediction']
             
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                # Aba 1
                 df_report.to_excel(writer, sheet_name='Resumo', index=False, startrow=0)
                 df_scalars.to_excel(writer, sheet_name='Resumo', index=False, startrow=len(df_report) + 2)
+                
+                # Aba 2: Sucessos
                 df_tp.drop(columns=cols_drop, errors='ignore').to_excel(writer, sheet_name='Fraudes Reais (VP)', index=False)
+                
+                # Aba 3: Alarmes Falsos
                 df_fp.drop(columns=cols_drop, errors='ignore').to_excel(writer, sheet_name='Alarmes Falsos (FP)', index=False)
-            messagebox.showinfo("Sucesso", f"Relatório salvo em:\n{filepath}")
+                
+                # Aba 4: Prejuízos (Fraudes Não Detectadas)
+                df_fn.drop(columns=cols_drop, errors='ignore').to_excel(writer, sheet_name='Fraudes Nao Detectadas (FN)', index=False)
+
+            messagebox.showinfo("Sucesso", f"Relatório salvo com 4 abas em:\n{filepath}")
     except Exception as e:
         messagebox.showerror("Erro", str(e))
 
