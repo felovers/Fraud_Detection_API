@@ -45,7 +45,7 @@ def run_evaluation_thread():
         # --- 1. Carregar o Dataset ---
         log_to_screen("Aguardando seleção do arquivo de dados...")
         filepath = filedialog.askopenfilename(
-            title="Selecione o Dataset COMPLETO (creditcard.csv)",
+            title="Selecione o Arquivo Desejado",
             filetypes=[("Arquivos CSV", "*.csv")]
         )
         if not filepath:
